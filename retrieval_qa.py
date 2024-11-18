@@ -16,7 +16,7 @@ def initialize_qa_chain(pgvector, groq_api_key):
     {context}
 
     Current Question: {input}
-
+    Do not give any other information in the response apart from the answer.
     Answer:""")
     
     document_chain = create_stuff_documents_chain(llm, prompt)

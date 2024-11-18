@@ -13,8 +13,8 @@ def store_embeddings_in_pgvector(documents, db_config):
         documents=documents,
         embedding=embeddings_model,
         collection_name="embeddings_collection",
-        connection_string=connection_string,
         distance_strategy=DistanceStrategy.COSINE,
+        connection_string=connection_string,
         collection_metadata={"description": "Document embeddings"},
         pre_delete_collection=True,
         use_jsonb=True
