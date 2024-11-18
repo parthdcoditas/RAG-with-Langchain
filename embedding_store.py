@@ -16,7 +16,8 @@ def store_embeddings_in_pgvector(documents, db_config):
         connection_string=connection_string,
         distance_strategy=DistanceStrategy.COSINE,
         collection_metadata={"description": "Document embeddings"},
-        pre_delete_collection=True
+        pre_delete_collection=True,
+        use_jsonb=True
     )
     
     return pgvector

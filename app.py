@@ -1,17 +1,12 @@
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_groq import ChatGroq
+import uuid
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langchain_postgres import PostgresChatMessageHistory
 from data_loader import load_and_split_wikipedia
 from embedding_store import store_embeddings_in_pgvector
-# from retrieval_qa import initialize_qa_chain, get_response
+from retrieval_qa import initialize_qa_chain, get_response
 from dotenv import load_dotenv
-from langchain_postgres import PostgresChatMessageHistory
-from langchain.schema.messages import BaseMessage
-import uuid
+import psycopg
 import os
-import psycopg2
 
 load_dotenv()
 
@@ -23,75 +18,46 @@ db_config = {
     "port": os.getenv("port")
 }
 
+table_name = "chat_history"
+session_id = str(uuid.uuid4()) 
+
 if __name__ == "__main__":
+    
+    conn_info = f"dbname={db_config['dbname']} user={db_config['user']} password={db_config['password']} host={db_config['host']} port={db_config['port']}"
+    sync_connection = psycopg.connect(conn_info)
+
+    # Create the table schema for chat history if not exists
+    PostgresChatMessageHistory.create_tables(sync_connection, table_name)
+    chat_history = PostgresChatMessageHistory(table_name, session_id, sync_connection=sync_connection)
+
     print("Loading and splitting data...")
     chunks = load_and_split_wikipedia()
 
     print("Generating embeddings and storing in PGVector...")
     pgvector = store_embeddings_in_pgvector(chunks, db_config)
 
-    retriever = pgvector.as_retriever()
-    llm = ChatGroq(api_key=os.getenv("groq_api_key"))
-    
-    def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
-
-    prompt = ChatPromptTemplate.from_template("""Answer the following question based on the provided context:
-    
-    Context: {context}
-    Chat History: {chat_history}
-    Question: {question}
-    
-    Answer:""")
-
-    rag_chain = (
-        {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
-            "chat_history": lambda x: x.get("chat_history", "")
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-
-    connection = psycopg2.connect(
-        dbname=db_config["dbname"],
-        user=db_config["user"],
-        password=db_config["password"],
-        host=db_config["host"],
-        port=db_config["port"]
-    )
-    session_id = str(uuid.uuid4())
-    print(session_id)
-    chat_history = PostgresChatMessageHistory(
-        "chat_history",
-        session_id,
-        sync_connection=connection
-    )
+    print("Setting up QA chain...")
+    groq_api_key = os.getenv("groq_api_key")
+    qa_chain = initialize_qa_chain(pgvector, groq_api_key)
 
     while True:
-        user_query = input("Enter your query (or type 'exit' to quit): ").strip()
+        user_query = input("\nEnter your query (or type 'exit' to quit): ")
         if user_query.lower() == "exit":
             print("The end!")
             break
 
-        # Simplify chat history handling
-        try:
-            history_messages = []
-            for message in chat_history.messages:
-                history_messages.append(f"{message.type}: {message.content}")
-            history_str = "\n".join(history_messages[-5:])  # Get last 5 messages
-        except Exception:
-            history_str = ""  # Fallback if there's an error getting history
+        previous_messages = chat_history.messages[-5:] if len(chat_history.messages) >= 5 else chat_history.messages
+
+        chat_history.add_messages([HumanMessage(content=user_query)])
+
+        if previous_messages:
+            history_content = "\n".join(
+                f"{type(msg).__name__}: {msg.content}" for msg in previous_messages
+            )
 
         print("Retrieving and generating response...")
+        response = get_response(qa_chain, user_query, previous_messages)
 
-        response = rag_chain.invoke(
-            user_query
-        )
+        chat_history.add_messages([AIMessage(content=response)])
+
         print(f"Response: {response}")
-
-        chat_history.add_message(HumanMessage(content=user_query))
-        chat_history.add_message(AIMessage(content=response))
-        
